@@ -20,12 +20,18 @@ fn main() {
         y: usize,
     }
 
+    #[derive(Clone, PartialEq, Eq)]
+    enum CellType {
+        Wall,
+        Path,
+    }
+
     #[derive(Clone)]
     struct Maze {
         width: usize,
         height: usize,
         room_size: usize,
-        cells: Vec<bool>, // true = path, false = wall
+        cells: Vec<CellType>,
     }
 
     impl Maze {
@@ -38,7 +44,7 @@ fn main() {
             let mut maze = Maze {
                 width,
                 height,
-                cells: vec![false; width * height],
+                cells: vec![CellType::Wall; width * height],
                 room_size,
             };
 
@@ -49,7 +55,7 @@ fn main() {
             for y in (center_y - room_size / 2)..=(center_y + room_size / 2) {
                 for x in (center_x - room_size / 2)..=(center_x + room_size / 2) {
                     if x < width && y < height {
-                        maze.set(x, y, true);
+                        maze.set(x, y, CellType::Path);
                     }
                 }
             }
@@ -96,7 +102,7 @@ fn main() {
                 }
             };
 
-            maze.set(exit_pos.x, exit_pos.y, true);
+            maze.set(exit_pos.x, exit_pos.y, CellType::Path);
 
             // Connect exit to maze
             let direction = match (exit_pos.x, exit_pos.y) {
@@ -111,7 +117,7 @@ fn main() {
 
             // Ensure we make at least one step inward to break through the wall
             if x >= 0 && x < width as isize && y >= 0 && y < height as isize {
-                maze.set(x as usize, y as usize, true);
+                maze.set(x as usize, y as usize, CellType::Path);
                 x += direction.0;
                 y += direction.1;
             }
@@ -121,27 +127,27 @@ fn main() {
                 && x < width as isize
                 && y >= 0
                 && y < height as isize
-                && !maze.get(x as usize, y as usize)
+                && maze.get(x as usize, y as usize) != &CellType::Path
             {
-                maze.set(x as usize, y as usize, true);
+                maze.set(x as usize, y as usize, CellType::Path);
                 x += direction.0;
                 y += direction.1;
             }
 
-            // Fix top and bottom walls to ensure uniform thickness
-            for x in 0..width {
-                maze.set(x, 0, false); // Top wall
-                maze.set(x, height - 1, false); // Bottom wall
-            }
+            // // Fix top and bottom walls to ensure uniform thickness
+            // for x in 0..width {
+            //     maze.set(x, 0, CellType::Wall); // Top wall
+            //     maze.set(x, height - 1, CellType::Wall); // Bottom wall
+            // }
 
             maze
         }
 
-        fn get(&self, x: usize, y: usize) -> bool {
-            self.cells[y * self.width + x]
+        fn get(&self, x: usize, y: usize) -> &CellType {
+            &self.cells[y * self.width + x]
         }
 
-        fn set(&mut self, x: usize, y: usize, value: bool) {
+        fn set(&mut self, x: usize, y: usize, value: CellType) {
             self.cells[y * self.width + x] = value;
         }
 
@@ -212,8 +218,8 @@ fn main() {
                     let (next, wall) = valid_directions.choose(&mut rng).unwrap();
 
                     // Carve a path through the wall
-                    self.set(wall.x, wall.y, true);
-                    self.set(next.x, next.y, true);
+                    self.set(wall.x, wall.y, CellType::Path);
+                    self.set(next.x, next.y, CellType::Path);
 
                     visited.insert(*next);
                     stack.push(*next);
@@ -245,11 +251,11 @@ fn main() {
             let mut valid_cells = Vec::new();
             for y in 1..self.height - 1 {
                 for x in 1..self.width - 1 {
-                    if self.get(x, y) {
+                    if self.get(x, y) == &CellType::Path {
                         // Count neighboring paths
                         let neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
                             .iter()
-                            .filter(|&&(nx, ny)| self.get(nx, ny))
+                            .filter(|&&(nx, ny)| self.get(nx, ny) == &CellType::Path)
                             .count();
 
                         // Only include cells that are part of a corridor (exactly 2 neighbors)
@@ -317,7 +323,7 @@ fn main() {
                         for (nx, ny) in directions {
                             if nx < self.width
                                 && ny < self.height
-                                && self.get(nx, ny)
+                                && self.get(nx, ny) == &CellType::Path
                                 && !(nx >= room_min_x
                                     && nx <= room_max_x
                                     && ny >= room_min_y
@@ -362,7 +368,7 @@ fn main() {
                 for next in directions.iter() {
                     if next.x < self.width
                         && next.y < self.height
-                        && self.get(next.x, next.y)
+                        && self.get(next.x, next.y) == &CellType::Path
                         && !visited.contains(next)
                     {
                         let mut new_path = path.clone();
@@ -404,7 +410,7 @@ fn main() {
             // Draw the maze
             for y in 0..maze.height {
                 for x in 0..maze.width {
-                    if maze.get(x, y) {
+                    if maze.get(x, y) == &CellType::Path {
                         writeln!(
                             file,
                             "    <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" />",
@@ -463,7 +469,7 @@ fn main() {
             let mut exit_pos = None;
             for x in [0, self.width - 1].iter() {
                 for y in 0..self.height {
-                    if self.get(*x, y) {
+                    if self.get(*x, y) == &CellType::Path {
                         exit_pos = Some(Pos { x: *x, y });
                         break;
                     }
@@ -472,7 +478,7 @@ fn main() {
             if exit_pos.is_none() {
                 for y in [0, self.height - 1].iter() {
                     for x in 0..self.width {
-                        if self.get(x, *y) {
+                        if self.get(x, *y) == &CellType::Path {
                             exit_pos = Some(Pos { x, y: *y });
                             break;
                         }
@@ -493,7 +499,7 @@ fn main() {
             // Scan the maze to find all intersections and dead ends
             for y in 1..self.height - 1 {
                 for x in 1..self.width - 1 {
-                    if self.get(x, y) {
+                    if self.get(x, y) == &CellType::Path {
                         let current_pos = Pos { x, y };
                         let neighbors = [
                             Pos { x: x + 1, y },
@@ -502,7 +508,7 @@ fn main() {
                             Pos { x, y: y - 1 },
                         ]
                         .iter()
-                        .filter(|pos| self.get(pos.x, pos.y))
+                        .filter(|pos| self.get(pos.x, pos.y) == &CellType::Path)
                         .count();
 
                         // Create a node if this is an intersection (>2 neighbors) or dead end (1 neighbor)
@@ -538,7 +544,7 @@ fn main() {
                         || x >= self.width as isize
                         || y < 0
                         || y >= self.height as isize
-                        || !self.get(x as usize, y as usize)
+                        || self.get(x as usize, y as usize) != &CellType::Path
                     {
                         continue;
                     }
@@ -580,7 +586,8 @@ fn main() {
                                     x: nx as usize,
                                     y: ny as usize,
                                 };
-                                if self.get(next_pos.x, next_pos.y) && !visited.contains(&next_pos)
+                                if self.get(next_pos.x, next_pos.y) == &CellType::Path
+                                    && !visited.contains(&next_pos)
                                 {
                                     x = nx;
                                     y = ny;
