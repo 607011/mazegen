@@ -4,4 +4,5 @@
 
 Have fun 😁
 
-<img width="1608" alt="grafik" src="https://github.com/user-attachments/assets/2a149faa-8f29-4b3c-b6c8-eb07d3e7adc0" />
+<img width="486" alt="grafik" src="https://github.com/user-attachments/assets/92892ca8-52b8-4736-a710-b68837e41b26" />
+
