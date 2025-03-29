@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
+use std::sync::LazyLock;
 
 fn main() {
     use rand::prelude::*;
@@ -20,11 +21,125 @@ fn main() {
         y: usize,
     }
 
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum CellType {
         Wall,
         Path,
+        Marshmallows,
+        GummyBears,
+        Cookies,
+        Candy,
+        Chocolate,
+        Zombie,
+        Ghost,
+        Witch,
+        Fog,
+        Shadows,
+        Crow,
+        BlackCat,
+        Skeleton,
+        Spider,
+        Bat,
+        Pumpkin,
     }
+
+    impl CellType {
+        #[allow(dead_code)]
+        fn to_string(self) -> &'static str {
+            match self {
+                CellType::Wall => "Wall",
+                CellType::Path => "Path",
+                CellType::Marshmallows => "Marshmallows",
+                CellType::GummyBears => "Gummy Bears",
+                CellType::Cookies => "Cookies",
+                CellType::Candy => "Candy",
+                CellType::Chocolate => "Chocolate",
+                CellType::Zombie => "Zombie",
+                CellType::Ghost => "Ghost",
+                CellType::Witch => "Witch",
+                CellType::Fog => "Fog",
+                CellType::Shadows => "Shadows",
+                CellType::Crow => "Crow",
+                CellType::BlackCat => "Black Cat",
+                CellType::Skeleton => "Skeleton",
+                CellType::Spider => "Spider",
+                CellType::Bat => "Bat",
+                CellType::Pumpkin => "Pumpkin",
+            }
+        }
+        fn weight(&self) -> i32 {
+            match self {
+                CellType::Wall => 0,
+                CellType::Path => 0,
+                CellType::Marshmallows => -2,
+                CellType::GummyBears => -3,
+                CellType::Cookies => -4,
+                CellType::Candy => -2,
+                CellType::Chocolate => -6,
+                CellType::Zombie => 7,
+                CellType::Ghost => 6,
+                CellType::Witch => 9,
+                CellType::Fog => 3,
+                CellType::Shadows => 4,
+                CellType::Crow => 5,
+                CellType::BlackCat => 2,
+                CellType::Skeleton => 5,
+                CellType::Spider => 3,
+                CellType::Bat => 1,
+                CellType::Pumpkin => 2,
+            }
+        }
+    }
+
+    static REWARDS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
+        vec![
+            CellType::Marshmallows,
+            CellType::GummyBears,
+            CellType::Cookies,
+            CellType::Candy,
+            CellType::Chocolate,
+        ]
+    });
+
+    static DANGERS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
+        vec![
+            CellType::Zombie,
+            CellType::Ghost,
+            CellType::Witch,
+            CellType::Fog,
+            CellType::Shadows,
+            CellType::Crow,
+            CellType::BlackCat,
+            CellType::Skeleton,
+            CellType::Spider,
+            CellType::Bat,
+            CellType::Pumpkin,
+        ]
+    });
+
+    static TRAVERSABLE: LazyLock<HashSet<CellType>> = LazyLock::new(|| {
+        [
+            CellType::Path,
+            CellType::Marshmallows,
+            CellType::GummyBears,
+            CellType::Cookies,
+            CellType::Candy,
+            CellType::Chocolate,
+            CellType::Zombie,
+            CellType::Ghost,
+            CellType::Witch,
+            CellType::Fog,
+            CellType::Shadows,
+            CellType::Crow,
+            CellType::BlackCat,
+            CellType::Skeleton,
+            CellType::Spider,
+            CellType::Bat,
+            CellType::Pumpkin,
+        ]
+        .into_iter()
+        .collect()
+    });
 
     #[derive(Clone)]
     struct Maze {
@@ -34,7 +149,13 @@ fn main() {
         cells: Vec<CellType>,
     }
 
-    type Edge = (usize, usize, usize); // (start_node_id, end_node_id, path_length)
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct Edge {
+        start_id: usize,
+        end_id: usize,
+        weight: i32,
+    }
+
     type Edges = HashSet<Edge>;
     type Nodes = HashMap<Pos, usize>; // (position, node_id)
 
@@ -138,12 +259,6 @@ fn main() {
                 y += direction.1;
             }
 
-            // // Fix top and bottom walls to ensure uniform thickness
-            // for x in 0..width {
-            //     maze.set(x, 0, CellType::Wall); // Top wall
-            //     maze.set(x, height - 1, CellType::Wall); // Bottom wall
-            // }
-
             maze
         }
 
@@ -231,61 +346,54 @@ fn main() {
             }
         }
 
-        #[allow(dead_code)]
-        fn place_letters(&mut self, fill_percentage: f64) -> HashMap<Pos, char> {
-            use rand::prelude::*;
+        fn place_artifacts(&mut self, fill_percentage: f32) {
             let mut rng = rand::rng();
-            let mut letter_positions = HashMap::new();
 
-            // Create a weighted distribution of letters
-            // C and T are four times more common
-            let letters = ['S', 'P', 'G', 'W', 'F', 'C', 'Z', 'G', 'T', 'C'];
-            let weighted_letters: Vec<char> = letters
-                .iter()
-                .flat_map(|&letter| {
-                    let weight = match letter {
-                        'C' | 'T' => 4, // C and T are 4x more likely
-                        _ => 1,
-                    };
-                    std::iter::repeat(letter).take(weight)
+            // Calculate how many cells should have artifacts
+            let path_cells = self.cells.iter().filter(|&&c| c == CellType::Path).count();
+            let artifacts_count = (path_cells as f32 * fill_percentage) as usize;
+
+            let center_x = self.width / 2;
+            let center_y = self.height / 2;
+
+            // Collect all valid positions
+            let mut valid_positions: Vec<Pos> = (0..self.height)
+                .flat_map(|y| (0..self.width).map(move |x| Pos { x, y }))
+                .filter(|pos| {
+                    let in_center_room = pos.x >= center_x - self.room_size / 2
+                        && pos.x <= center_x + self.room_size / 2
+                        && pos.y >= center_y - self.room_size / 2
+                        && pos.y <= center_y + self.room_size / 2;
+
+                    self.get(pos.x, pos.y) == CellType::Path && !in_center_room
                 })
                 .collect();
 
-            // Count open cells (paths) that are not dead ends or intersections
-            let mut valid_cells = Vec::new();
-            for y in 1..self.height - 1 {
-                for x in 1..self.width - 1 {
-                    if self.get(x, y) == CellType::Path {
-                        // Count neighboring paths
-                        let neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
-                            .iter()
-                            .filter(|&&(nx, ny)| self.get(nx, ny) == CellType::Path)
-                            .count();
+            // Shuffle positions
+            valid_positions.shuffle(&mut rng);
 
-                        // Only include cells that are part of a corridor (exactly 2 neighbors)
-                        if neighbors == 2 {
-                            valid_cells.push(Pos { x, y });
-                        }
-                    }
+            // Place artifacts
+            let reward_ratio = 0.4; // 40% rewards, 60% dangers
+            let reward_count = (artifacts_count as f32 * reward_ratio) as usize;
+            let danger_count = artifacts_count - reward_count;
+
+            // Place rewards
+            for i in 0..reward_count {
+                if i < valid_positions.len() {
+                    let pos = valid_positions[i];
+                    let reward = REWARDS[rng.random_range(0..REWARDS.len())];
+                    self.set(pos.x, pos.y, reward);
                 }
             }
 
-            // Calculate how many letters to place
-            let num_cells_to_fill = (valid_cells.len() as f64 * fill_percentage) as usize;
-
-            // Shuffle the valid cells
-            valid_cells.shuffle(&mut rng);
-
-            // Place letters in randomly selected cells
-            for pos in valid_cells
-                .iter()
-                .take(num_cells_to_fill.min(valid_cells.len()))
-            {
-                let letter_idx = rng.random_range(0..weighted_letters.len());
-                letter_positions.insert(*pos, weighted_letters[letter_idx]);
+            // Place dangers
+            for i in reward_count..reward_count + danger_count {
+                if i < valid_positions.len() {
+                    let pos = valid_positions[i];
+                    let danger = DANGERS[rng.random_range(0..DANGERS.len())];
+                    self.set(pos.x, pos.y, danger);
+                }
             }
-
-            letter_positions
         }
 
         fn solve(&mut self) -> Option<Vec<Pos>> {
@@ -327,7 +435,7 @@ fn main() {
                         for (nx, ny) in directions {
                             if nx < self.width
                                 && ny < self.height
-                                && self.get(nx, ny) == CellType::Path
+                                && TRAVERSABLE.contains(&self.get(nx, ny))
                                 && !(nx >= room_min_x
                                     && nx <= room_max_x
                                     && ny >= room_min_y
@@ -370,15 +478,14 @@ fn main() {
                 ];
 
                 for next in directions.iter() {
-                    if next.x < self.width
-                        && next.y < self.height
-                        && self.get(next.x, next.y) == CellType::Path
-                        && !visited.contains(next)
-                    {
-                        let mut new_path = path.clone();
-                        new_path.push(*next);
-                        queue.insert(0, (*next, new_path));
-                        visited.insert(*next);
+                    if next.x < self.width && next.y < self.height && !visited.contains(next) {
+                        let cell_type = self.get(next.x, next.y);
+                        if TRAVERSABLE.contains(&cell_type) {
+                            let mut new_path = path.clone();
+                            new_path.push(*next);
+                            queue.insert(0, (*next, new_path));
+                            visited.insert(*next);
+                        }
                     }
                 }
             }
@@ -389,7 +496,7 @@ fn main() {
         fn export_to_svg(
             &self,
             filename: &str,
-            scale: f64,
+            scale: f32,
             with_solution: bool,
         ) -> std::io::Result<()> {
             let mut maze = self.clone();
@@ -399,41 +506,76 @@ fn main() {
             writeln!(
                 file,
                 "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">",
-                maze.width as f64 * scale,
-                maze.height as f64 * scale,
-                maze.width as f64 * scale,
-                maze.height as f64 * scale
+                maze.width as f32 * scale,
+                maze.height as f32 * scale,
+                maze.width as f32 * scale,
+                maze.height as f32 * scale
             )?;
 
             writeln!(
                 file,
-                "<rect width=\"100%\" height=\"100%\" fill=\"#222\" />"
+                "<rect width=\"100%\" height=\"100%\" fill=\"#eee\" />"
             )?;
             writeln!(file, "  <g transform=\"scale({})\" fill=\"#eee\" >", scale)?;
-
-            // Draw the maze
-            for y in 0..maze.height {
-                for x in 0..maze.width {
-                    if maze.get(x, y) == CellType::Path {
-                        writeln!(
-                            file,
-                            "    <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" />",
-                            x, y, 1, 1
-                        )?;
-                    }
-                }
-            }
 
             if with_solution {
                 if let Some(solution) = maze.solve() {
                     writeln!(
                         file,
-                        "    <polyline fill=\"none\" stroke=\"red\" stroke-width=\"0.5\" points=\"",
+                        "    <polyline fill=\"none\" stroke=\"rgb(28, 163, 163)\" stroke-width=\"0.35\" points=\"",
                     )?;
                     for pos in solution {
-                        write!(file, "{},{} ", (pos.x as f64 + 0.5), (pos.y as f64 + 0.5))?;
+                        write!(file, "{},{} ", (pos.x as f32 + 0.5), (pos.y as f32 + 0.5))?;
                     }
                     writeln!(file, "\" />")?;
+                }
+            }
+
+            // Draw the maze
+            for y in 0..maze.height {
+                for x in 0..maze.width {
+                    match maze.get(x, y) {
+                        CellType::Zombie
+                        | CellType::Ghost
+                        | CellType::Witch
+                        | CellType::Fog
+                        | CellType::Shadows
+                        | CellType::Crow
+                        | CellType::BlackCat
+                        | CellType::Skeleton
+                        | CellType::Spider
+                        | CellType::Bat
+                        | CellType::Pumpkin => {
+                            writeln!(
+                                file,
+                                "    <circle cx=\"{}\" cy=\"{}\" r=\"0.4\" fill=\"#e43\" title=\"{}\" />",
+                                x as f32 + 0.5,
+                                y as f32 + 0.5,
+                                maze.get(x, y).to_string()
+                            )?;
+                        }
+                        CellType::Marshmallows
+                        | CellType::GummyBears
+                        | CellType::Cookies
+                        | CellType::Candy
+                        | CellType::Chocolate => {
+                            writeln!(
+                                file,
+                                "    <circle cx=\"{}\" cy=\"{}\" r=\"0.4\" fill=\"#2d1\" title=\"{}\" />",
+                                x as f32 + 0.5,
+                                y as f32 + 0.5,
+                                maze.get(x, y).to_string()
+                            )?;
+                        }
+                        CellType::Wall => {
+                            writeln!(
+                                file,
+                                "    <rect x=\"{}\" y=\"{}\" width=\"1\" height=\"1\" fill=\"#222\" />",
+                                x, y
+                            )?;
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -486,7 +628,12 @@ fn main() {
             // Scan the maze to find all intersections and dead ends
             for y in 1..self.height - 1 {
                 for x in 1..self.width - 1 {
-                    if self.get(x, y) == CellType::Path {
+                    let cell_type = self.get(x, y);
+                    // Check if the cell is a path, reward or danger (traversable)
+                    if cell_type == CellType::Path
+                        || REWARDS.contains(&cell_type)
+                        || DANGERS.contains(&cell_type)
+                    {
                         let current_pos = Pos { x, y };
                         let neighbors = [
                             Pos { x: x + 1, y },
@@ -495,7 +642,12 @@ fn main() {
                             Pos { x, y: y - 1 },
                         ]
                         .iter()
-                        .filter(|pos| self.get(pos.x, pos.y) == CellType::Path)
+                        .filter(|pos| {
+                            let pos_type = self.get(pos.x, pos.y);
+                            pos_type == CellType::Path
+                                || REWARDS.contains(&pos_type)
+                                || DANGERS.contains(&pos_type)
+                        })
                         .count();
 
                         // Create a node if this is an intersection (>2 neighbors) or dead end (1 neighbor)
@@ -519,16 +671,16 @@ fn main() {
                     let mut x = start_pos.x as isize + dx;
                     let mut y = start_pos.y as isize + dy;
 
-                    if x < 0
-                        || x >= self.width as isize
-                        || y < 0
-                        || y >= self.height as isize
-                        || self.get(x as usize, y as usize) != CellType::Path
-                    {
+                    if x < 0 || x >= self.width as isize || y < 0 || y >= self.height as isize {
                         continue;
                     }
 
-                    let mut path_length = 1;
+                    let cell_type = self.get(x as usize, y as usize);
+                    if cell_type == CellType::Wall {
+                        continue;
+                    }
+
+                    let mut weight = cell_type.weight(); // Start with the weight of the first cell
                     let mut visited = HashSet::new();
                     visited.insert(start_pos);
 
@@ -543,7 +695,11 @@ fn main() {
                         if let Some(&end_id) = nodes.get(&current_pos) {
                             if start_id < end_id {
                                 // Only add each edge once
-                                edges.insert((start_id, end_id, path_length));
+                                edges.insert(Edge {
+                                    start_id,
+                                    end_id,
+                                    weight,
+                                });
                             }
                             break;
                         }
@@ -565,12 +721,13 @@ fn main() {
                                     x: nx as usize,
                                     y: ny as usize,
                                 };
-                                if self.get(next_pos.x, next_pos.y) == CellType::Path
-                                    && !visited.contains(&next_pos)
+                                let next_cell_type = self.get(next_pos.x, next_pos.y);
+
+                                if next_cell_type != CellType::Wall && !visited.contains(&next_pos)
                                 {
                                     x = nx;
                                     y = ny;
-                                    path_length += 1;
+                                    weight += next_cell_type.weight();
                                     next_found = true;
                                     break;
                                 }
@@ -670,14 +827,11 @@ fn main() {
             }
 
             // Write edges
-            for &(start, end, length) in &edges {
+            for &edge in &edges {
                 writeln!(
                     file,
                     "    n{} -- n{} [len={:.1}, label=\"{}\"];",
-                    start,
-                    end,
-                    length as f64 * 0.5,
-                    length
+                    edge.start_id, edge.end_id, edge.weight, edge.weight
                 )?;
             }
 
@@ -687,10 +841,11 @@ fn main() {
     }
 
     // Main function to generate and display a maze
-    let maze_width = 160;
-    let maze_height = 90;
+    let maze_width = 80;
+    let maze_height = 50;
     let room_size = 5;
-    let maze = Maze::new(maze_width, maze_height, room_size, Some(Exit::Right));
+    let mut maze = Maze::new(maze_width, maze_height, room_size, Some(Exit::Right));
+    maze.place_artifacts(0.1);
     maze.export_to_dot("maze.dot")
         .expect("Failed to export maze to DOT file");
     maze.export_to_svg("maze.svg", 10.0, true)
