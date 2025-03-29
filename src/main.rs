@@ -20,7 +20,7 @@ fn main() {
         y: usize,
     }
 
-    #[derive(Clone, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum CellType {
         Wall,
         Path,
@@ -33,6 +33,10 @@ fn main() {
         room_size: usize,
         cells: Vec<CellType>,
     }
+
+    type Edge = (usize, usize, usize); // (start_node_id, end_node_id, path_length)
+    type Edges = HashSet<Edge>;
+    type Nodes = HashMap<Pos, usize>; // (position, node_id)
 
     impl Maze {
         fn new(width: usize, height: usize, room_size: usize, exit_type: Option<Exit>) -> Self {
@@ -127,7 +131,7 @@ fn main() {
                 && x < width as isize
                 && y >= 0
                 && y < height as isize
-                && maze.get(x as usize, y as usize) != &CellType::Path
+                && maze.get(x as usize, y as usize) != CellType::Path
             {
                 maze.set(x as usize, y as usize, CellType::Path);
                 x += direction.0;
@@ -143,8 +147,8 @@ fn main() {
             maze
         }
 
-        fn get(&self, x: usize, y: usize) -> &CellType {
-            &self.cells[y * self.width + x]
+        fn get(&self, x: usize, y: usize) -> CellType {
+            self.cells[y * self.width + x]
         }
 
         fn set(&mut self, x: usize, y: usize, value: CellType) {
@@ -251,11 +255,11 @@ fn main() {
             let mut valid_cells = Vec::new();
             for y in 1..self.height - 1 {
                 for x in 1..self.width - 1 {
-                    if self.get(x, y) == &CellType::Path {
+                    if self.get(x, y) == CellType::Path {
                         // Count neighboring paths
                         let neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
                             .iter()
-                            .filter(|&&(nx, ny)| self.get(nx, ny) == &CellType::Path)
+                            .filter(|&&(nx, ny)| self.get(nx, ny) == CellType::Path)
                             .count();
 
                         // Only include cells that are part of a corridor (exactly 2 neighbors)
@@ -323,7 +327,7 @@ fn main() {
                         for (nx, ny) in directions {
                             if nx < self.width
                                 && ny < self.height
-                                && self.get(nx, ny) == &CellType::Path
+                                && self.get(nx, ny) == CellType::Path
                                 && !(nx >= room_min_x
                                     && nx <= room_max_x
                                     && ny >= room_min_y
@@ -368,7 +372,7 @@ fn main() {
                 for next in directions.iter() {
                     if next.x < self.width
                         && next.y < self.height
-                        && self.get(next.x, next.y) == &CellType::Path
+                        && self.get(next.x, next.y) == CellType::Path
                         && !visited.contains(next)
                     {
                         let mut new_path = path.clone();
@@ -410,7 +414,7 @@ fn main() {
             // Draw the maze
             for y in 0..maze.height {
                 for x in 0..maze.width {
-                    if maze.get(x, y) == &CellType::Path {
+                    if maze.get(x, y) == CellType::Path {
                         writeln!(
                             file,
                             "    <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" />",
@@ -438,38 +442,26 @@ fn main() {
             Ok(())
         }
 
-        fn export_to_dot(&self, filename: &str) -> std::io::Result<()> {
-            let mut file = File::create(filename)?;
-
-            // Write DOT file header
-            writeln!(file, "graph Maze {{")?;
-            writeln!(file, "    node [shape=point];")?;
-            writeln!(file, "    edge [len=1.0];")?;
-
-            // Find all nodes (intersections and dead ends)
-            let mut nodes = HashMap::new();
+        fn build_graph(&self) -> (Nodes, Edges) {
+            let mut nodes: Nodes = HashMap::new();
+            let mut edges: Edges = HashSet::new();
             let mut node_id = 0;
 
             // Special nodes: center (start) and exit
-            let center_x = self.width / 2;
-            let center_y = self.height / 2;
-            let center_pos = Pos {
+            let center_x: usize = self.width / 2;
+            let center_y: usize = self.height / 2;
+            let center_pos: Pos = Pos {
                 x: center_x,
                 y: center_y,
             };
             nodes.insert(center_pos, node_id);
-            writeln!(
-                file,
-                "    n{} [color=green, shape=circle, label=\"Start\"];",
-                node_id
-            )?;
             node_id += 1;
 
             // Find exit node
-            let mut exit_pos = None;
+            let mut exit_pos: Option<Pos> = None;
             for x in [0, self.width - 1].iter() {
                 for y in 0..self.height {
-                    if self.get(*x, y) == &CellType::Path {
+                    if self.get(*x, y) == CellType::Path {
                         exit_pos = Some(Pos { x: *x, y });
                         break;
                     }
@@ -478,7 +470,7 @@ fn main() {
             if exit_pos.is_none() {
                 for y in [0, self.height - 1].iter() {
                     for x in 0..self.width {
-                        if self.get(x, *y) == &CellType::Path {
+                        if self.get(x, *y) == CellType::Path {
                             exit_pos = Some(Pos { x, y: *y });
                             break;
                         }
@@ -488,18 +480,13 @@ fn main() {
 
             if let Some(pos) = exit_pos {
                 nodes.insert(pos, node_id);
-                writeln!(
-                    file,
-                    "    n{} [color=red, shape=box, label=\"Exit\"];",
-                    node_id
-                )?;
                 node_id += 1;
             }
 
             // Scan the maze to find all intersections and dead ends
             for y in 1..self.height - 1 {
                 for x in 1..self.width - 1 {
-                    if self.get(x, y) == &CellType::Path {
+                    if self.get(x, y) == CellType::Path {
                         let current_pos = Pos { x, y };
                         let neighbors = [
                             Pos { x: x + 1, y },
@@ -508,7 +495,7 @@ fn main() {
                             Pos { x, y: y - 1 },
                         ]
                         .iter()
-                        .filter(|pos| self.get(pos.x, pos.y) == &CellType::Path)
+                        .filter(|pos| self.get(pos.x, pos.y) == CellType::Path)
                         .count();
 
                         // Create a node if this is an intersection (>2 neighbors) or dead end (1 neighbor)
@@ -517,12 +504,6 @@ fn main() {
                             && Some(current_pos) != exit_pos
                         {
                             nodes.insert(current_pos, node_id);
-                            let label = if neighbors == 1 {
-                                "Dead End"
-                            } else {
-                                "Junction"
-                            };
-                            writeln!(file, "    n{} [label=\"{}\"];", node_id, label)?;
                             node_id += 1;
                         }
                     }
@@ -530,8 +511,6 @@ fn main() {
             }
 
             // Create edges between nodes by following paths
-            let mut edges = HashSet::new();
-
             for (&start_pos, &start_id) in &nodes {
                 // For each direction, follow the path until another node is found
                 let directions = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -544,7 +523,7 @@ fn main() {
                         || x >= self.width as isize
                         || y < 0
                         || y >= self.height as isize
-                        || self.get(x as usize, y as usize) != &CellType::Path
+                        || self.get(x as usize, y as usize) != CellType::Path
                     {
                         continue;
                     }
@@ -586,7 +565,7 @@ fn main() {
                                     x: nx as usize,
                                     y: ny as usize,
                                 };
-                                if self.get(next_pos.x, next_pos.y) == &CellType::Path
+                                if self.get(next_pos.x, next_pos.y) == CellType::Path
                                     && !visited.contains(&next_pos)
                                 {
                                     x = nx;
@@ -605,8 +584,93 @@ fn main() {
                 }
             }
 
-            // Write the edges to the DOT file
-            for (start, end, length) in edges {
+            (nodes, edges)
+        }
+
+        fn export_to_dot(&self, filename: &str) -> std::io::Result<()> {
+            let mut file = File::create(filename)?;
+            let (nodes, edges) = self.build_graph();
+
+            // Write DOT file header
+            writeln!(file, "graph Maze {{")?;
+            writeln!(file, "    node [shape=point];")?;
+            writeln!(file, "    edge [len=1.0];")?;
+
+            // Write nodes
+            let center_pos = Pos {
+                x: self.width / 2,
+                y: self.height / 2,
+            };
+
+            // Find the exit pos
+            let mut exit_pos = None;
+            for x in [0, self.width - 1].iter() {
+                for y in 0..self.height {
+                    if self.get(*x, y) == CellType::Path {
+                        exit_pos = Some(Pos { x: *x, y });
+                        break;
+                    }
+                }
+            }
+            if exit_pos.is_none() {
+                for y in [0, self.height - 1].iter() {
+                    for x in 0..self.width {
+                        if self.get(x, *y) == CellType::Path {
+                            exit_pos = Some(Pos { x, y: *y });
+                            break;
+                        }
+                    }
+                }
+            }
+
+            for (&pos, &node_id) in &nodes {
+                if pos == center_pos {
+                    writeln!(
+                        file,
+                        "    n{} [color=green, shape=circle, label=\"Start\"];",
+                        node_id
+                    )?;
+                } else if Some(pos) == exit_pos {
+                    writeln!(
+                        file,
+                        "    n{} [color=red, shape=box, label=\"Exit\"];",
+                        node_id
+                    )?;
+                } else {
+                    // Determine if node is a dead end or junction
+                    let neighbors = [
+                        Pos {
+                            x: pos.x + 1,
+                            y: pos.y,
+                        },
+                        Pos {
+                            x: pos.x.saturating_sub(1),
+                            y: pos.y,
+                        },
+                        Pos {
+                            x: pos.x,
+                            y: pos.y + 1,
+                        },
+                        Pos {
+                            x: pos.x,
+                            y: pos.y.saturating_sub(1),
+                        },
+                    ]
+                    .iter()
+                    .filter(|p| self.get(p.x, p.y) == CellType::Path)
+                    .count();
+
+                    let label = if neighbors == 1 {
+                        "Dead End"
+                    } else {
+                        "Junction"
+                    };
+                    writeln!(file, "    n{} [label=\"{}\"];", node_id, label)?;
+                }
+            }
+
+            // Write edges
+            for &(start, end, length) in &edges {
                 writeln!(
                     file,
                     "    n{} -- n{} [len={:.1}, label=\"{}\"];",
