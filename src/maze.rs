@@ -394,7 +394,7 @@ impl Maze {
         }
     }
 
-   pub fn solve(&mut self) -> Option<Vec<Pos>> {
+    pub fn solve(&mut self) -> Option<Vec<Pos>> {
         let center_x = self.width / 2;
         let center_y = self.height / 2;
         let start = Pos {
