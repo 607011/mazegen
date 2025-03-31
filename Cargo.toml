@@ -6,3 +6,21 @@ edition = "2024"
 [dependencies]
 rand = "^0.9"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+eframe = { version = "^0.31", features = [
+    "persistence",
+    "glow",
+    "default_fonts",
+    "wayland",
+] }
+egui = { version = "^0.31", features = ["persistence"] }
+log = "^0.4"
+env_logger = "^0.11"
+
+[[bin]]
+name = "maze"
+path = "src/maze/main.rs"
+
+[[bin]]
+name = "mazeui"
+path = "src/ui/ui.rs"

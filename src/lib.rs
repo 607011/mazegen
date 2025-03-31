@@ -1,12 +1,17 @@
 use rand::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::Write;
 use std::sync::LazyLock;
 
 #[allow(dead_code)]
-pub enum Exit {
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExitLocation {
+    Random,
     Left,
     Right,
     Top,
@@ -15,12 +20,14 @@ pub enum Exit {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Pos {
-    x: usize,
-    y: usize,
+    pub x: usize,
+    pub y: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellType {
+    Start,
+    Exit,
     Wall,
     Path,
     Marshmallows,
@@ -41,10 +48,11 @@ pub enum CellType {
     Pumpkin,
 }
 
-impl CellType {
-    #[allow(dead_code)]
-    pub fn to_string(self) -> &'static str {
-        match self {
+impl Display for CellType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CellType::Start => "Start",
+            CellType::Exit => "Exit",
             CellType::Wall => "Wall",
             CellType::Path => "Path",
             CellType::Marshmallows => "Marshmallows",
@@ -63,10 +71,16 @@ impl CellType {
             CellType::Spider => "Spider",
             CellType::Bat => "Bat",
             CellType::Pumpkin => "Pumpkin",
-        }
+        };
+        write!(f, "{}", &s)
     }
+}
+
+impl CellType {
     pub fn weight(&self) -> i32 {
         match self {
+            CellType::Start => 0,
+            CellType::Exit => 0,
             CellType::Wall => 0,
             CellType::Path => 0,
             CellType::Marshmallows => -2,
@@ -89,7 +103,7 @@ impl CellType {
     }
 }
 
-static REWARDS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
+pub static REWARDS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
     vec![
         CellType::Marshmallows,
         CellType::GummyBears,
@@ -99,7 +113,7 @@ static REWARDS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
     ]
 });
 
-static DANGERS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
+pub static DANGERS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
     vec![
         CellType::Zombie,
         CellType::Ghost,
@@ -115,8 +129,10 @@ static DANGERS: LazyLock<Vec<CellType>> = LazyLock::new(|| {
     ]
 });
 
-static TRAVERSABLE: LazyLock<HashSet<CellType>> = LazyLock::new(|| {
+pub static TRAVERSABLE: LazyLock<HashSet<CellType>> = LazyLock::new(|| {
     [
+        CellType::Start,
+        CellType::Exit,
         CellType::Path,
         CellType::Marshmallows,
         CellType::GummyBears,
@@ -139,11 +155,41 @@ static TRAVERSABLE: LazyLock<HashSet<CellType>> = LazyLock::new(|| {
     .collect()
 });
 
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SolutionType {
+    None,
+    ShortestPath,
+    MinimumSpanningTree,
+}
+impl Display for SolutionType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolutionType::None => write!(f, "none"),
+            SolutionType::ShortestPath => write!(f, "shortest_path"),
+            SolutionType::MinimumSpanningTree => write!(f, "minimum_spanning_tree"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MazeError {
+    pub message: String,
+}
+
+impl Display for MazeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for MazeError {}
+
 #[derive(Clone)]
 pub struct Maze {
     width: usize,
     height: usize,
     room_size: usize,
+    exit_type: ExitLocation,
     cells: Vec<CellType>,
 }
 
@@ -157,120 +203,207 @@ pub struct Edge {
 type Edges = HashSet<Edge>;
 type Nodes = HashMap<Pos, usize>; // (position, node_id)
 
-impl Maze {
-    pub fn new(width: usize, height: usize, room_size: usize, exit_type: Option<Exit>) -> Self {
-        // Ensure dimensions are odd to have proper walls
-        let width = if width % 2 == 0 { width + 1 } else { width };
-        let height = if height % 2 == 0 { height + 1 } else { height };
+macro_rules! constrain_dimension {
+    ($dim:expr) => {
+        if $dim < 7 {
+            7
+        } else {
+            let remainder = ($dim - 7) % 4;
+            if remainder == 0 {
+                $dim
+            } else {
+                $dim + (4 - remainder)
+            }
+        }
+    };
+}
 
-        // Initialize all cells as walls
-        let mut maze = Maze {
+impl Maze {
+    pub fn new(width: usize, height: usize, room_size: usize, exit_type: ExitLocation) -> Self {
+        let width = constrain_dimension!(width);
+        let height = constrain_dimension!(height);
+        Maze {
             width,
             height,
-            cells: vec![CellType::Wall; width * height],
             room_size,
-        };
+            exit_type,
+            cells: vec![CellType::Wall; width * height],
+        }
+    }
 
-        // Create center room
-        let center_x = width / 2;
-        let center_y = height / 2;
+    pub fn get_size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 
-        for y in (center_y - room_size / 2)..=(center_y + room_size / 2) {
-            for x in (center_x - room_size / 2)..=(center_x + room_size / 2) {
-                if x < width && y < height {
-                    maze.set(x, y, CellType::Path);
+    pub fn get(&self, x: usize, y: usize) -> CellType {
+        self.cells[y * self.width + x]
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, value: CellType) {
+        self.cells[y * self.width + x] = value;
+    }
+
+    pub fn mst_prim(&self) -> (Nodes, Edges) {
+        let (nodes, edges) = self.build_graph();
+        let mut mst_edges = HashSet::new();
+        let mut visited = HashSet::new();
+        let mut total_weight = 0;
+
+        // Start from the center node
+        let start_node = nodes.get(&Pos {
+            x: self.width / 2,
+            y: self.height / 2,
+        });
+        if start_node.is_none() {
+            return (nodes, mst_edges);
+        }
+        let start_node_id = *start_node.unwrap();
+
+        visited.insert(start_node_id);
+
+        while visited.len() < nodes.len() {
+            let mut min_edge: Option<Edge> = None;
+
+            for edge in &edges {
+                // Check if the edge connects a visited node with an unvisited one
+                let connects_visited_and_unvisited = (visited.contains(&edge.start_id)
+                    && !visited.contains(&edge.end_id))
+                    || (visited.contains(&edge.end_id) && !visited.contains(&edge.start_id));
+
+                if connects_visited_and_unvisited
+                    && (min_edge.is_none() || edge.weight < min_edge.as_ref().unwrap().weight)
+                {
+                    min_edge = Some(*edge);
                 }
+            }
+
+            if let Some(edge) = min_edge {
+                visited.insert(edge.start_id);
+                visited.insert(edge.end_id);
+                mst_edges.insert(edge);
+                total_weight += edge.weight;
+            } else {
+                break;
             }
         }
 
-        // Generate maze using recursive backtracking
-        maze.generate_from(Pos {
+        println!("Minimum Spanning Tree weight: {}", total_weight);
+        for edge in &mst_edges {
+            println!(
+                "Edge from {} to {} with weight {}",
+                edge.start_id, edge.end_id, edge.weight
+            );
+        }
+        (nodes, mst_edges)
+    }
+
+    pub fn generate(&mut self) {
+        let center_x = self.width / 2;
+        let center_y = self.height / 2;
+        let start = Pos {
             x: center_x,
             y: center_y,
-        });
+        };
+
+        // Create center room
+        for y in (center_y - self.room_size / 2)..=(center_y + self.room_size / 2) {
+            for x in (center_x - self.room_size / 2)..=(center_x + self.room_size / 2) {
+                self.set(x, y, CellType::Path);
+            }
+        }
 
         // Determine exit position based on exit_type
-        let exit_pos = match exit_type {
-            Some(Exit::Left) => Pos {
+        let exit_pos = match self.exit_type {
+            ExitLocation::Left => Pos {
                 x: 0,
-                y: height / 2,
+                y: self.height / 2,
             },
-            Some(Exit::Right) => Pos {
-                x: width - 1,
-                y: height / 2,
+            ExitLocation::Right => Pos {
+                x: self.width - 1,
+                y: self.height / 2,
             },
-            Some(Exit::Top) => Pos { x: width / 2, y: 0 },
-            Some(Exit::Bottom) => Pos {
-                x: width / 2,
-                y: height - 1,
+            ExitLocation::Top => Pos {
+                x: self.width / 2,
+                y: 0,
             },
-            None => {
+            ExitLocation::Bottom => Pos {
+                x: self.width / 2,
+                y: self.height - 1,
+            },
+            ExitLocation::Random => {
                 // Random exit if none specified
                 let exit_positions = [
                     Pos {
                         x: 0,
-                        y: height / 2,
+                        y: self.height / 2,
                     }, // Left
                     Pos {
-                        x: width - 1,
-                        y: height / 2,
+                        x: self.width - 1,
+                        y: self.height / 2,
                     }, // Right
-                    Pos { x: width / 2, y: 0 }, // Top
                     Pos {
-                        x: width / 2,
-                        y: height - 1,
+                        x: self.width / 2,
+                        y: 0,
+                    }, // Top
+                    Pos {
+                        x: self.width / 2,
+                        y: self.height - 1,
                     }, // Bottom
                 ];
                 exit_positions[rand::rng().random_range(0..4)]
             }
         };
+        self.set(exit_pos.x, exit_pos.y, CellType::Exit);
+        self.generate_from(start);
 
-        maze.set(exit_pos.x, exit_pos.y, CellType::Path);
+        // After maze generation, remove some walls to create multiple paths
+        let mut rng = rand::rng();
+        let wall_removal_count = (self.width + self.height) / 8; // Adjust this value to control how many walls to remove
+        log::info!("Removing {} walls", wall_removal_count);
 
-        // Connect exit to maze
-        let direction = match (exit_pos.x, exit_pos.y) {
-            (0, _) => (1, 0),                    // From left wall: go right
-            (x, _) if x == width - 1 => (-1, 0), // From right wall: go left
-            (_, 0) => (0, 1),                    // From top wall: go down
-            _ => (0, -1),                        // From bottom wall: go up
-        };
+        for _ in 0..wall_removal_count {
+            // Find walls that are not on the edge and are surrounded by exactly two path cells
+            let mut candidate_walls = Vec::new();
 
-        let mut x = exit_pos.x as isize + direction.0;
-        let mut y = exit_pos.y as isize + direction.1;
+            for y in 1..self.height - 1 {
+                for x in 1..self.width - 1 {
+                    if self.get(x, y) != CellType::Wall {
+                        continue;
+                    }
+                    let adjacent_paths = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+                        .iter()
+                        .filter(|&&(ax, ay)| self.get(ax, ay) == CellType::Path)
+                        .count();
 
-        // Ensure we make at least one step inward to break through the wall
-        if x >= 0 && x < width as isize && y >= 0 && y < height as isize {
-            maze.set(x as usize, y as usize, CellType::Path);
-            x += direction.0;
-            y += direction.1;
+                    // If exactly two adjacent cells are paths and they're not diagonally opposite
+                    if adjacent_paths != 2 {
+                        continue;
+                    }
+                    // Check that the paths aren't diagonally opposite
+                    let has_horizontal_pair = self.get(x + 1, y) == CellType::Path
+                        && self.get(x - 1, y) == CellType::Path;
+                    let has_vertical_pair = self.get(x, y + 1) == CellType::Path
+                        && self.get(x, y - 1) == CellType::Path;
+                    // Only add wall if the paths are either both horizontal or both vertical
+                    if has_horizontal_pair || has_vertical_pair {
+                        candidate_walls.push((x, y));
+                    }
+                }
+            }
+            // Remove a random wall from candidates
+            if !candidate_walls.is_empty() {
+                let (wx, wy) = candidate_walls.choose(&mut rng).unwrap();
+                self.set(*wx, *wy, CellType::Path);
+            }
         }
-
-        // Now continue until we hit a path
-        while x >= 0
-            && x < width as isize
-            && y >= 0
-            && y < height as isize
-            && maze.get(x as usize, y as usize) != CellType::Path
-        {
-            maze.set(x as usize, y as usize, CellType::Path);
-            x += direction.0;
-            y += direction.1;
-        }
-
-        maze
     }
 
-    fn get(&self, x: usize, y: usize) -> CellType {
-        self.cells[y * self.width + x]
-    }
-
-    fn set(&mut self, x: usize, y: usize, value: CellType) {
-        self.cells[y * self.width + x] = value;
-    }
-
+    /// This code implements a Randomized Depth-First Search (DFS)
+    /// maze generation algorithm a.k.a. backtracking algorithm.
     fn generate_from(&mut self, start: Pos) {
         let mut rng = rand::rng();
         let mut stack = vec![start];
+
         let mut visited = HashSet::new();
         visited.insert(start);
 
@@ -344,12 +477,12 @@ impl Maze {
         }
     }
 
-    pub fn place_artifacts(&mut self, fill_percentage: f32) {
+    pub fn place_artifacts(&mut self, fill_ratio: f32) {
         let mut rng = rand::rng();
 
         // Calculate how many cells should have artifacts
         let path_cells = self.cells.iter().filter(|&&c| c == CellType::Path).count();
-        let artifacts_count = (path_cells as f32 * fill_percentage) as usize;
+        let artifacts_count = (path_cells as f32 * fill_ratio) as usize;
 
         let center_x = self.width / 2;
         let center_y = self.height / 2;
@@ -375,26 +508,99 @@ impl Maze {
         let reward_count = (artifacts_count as f32 * reward_ratio) as usize;
         let danger_count = artifacts_count - reward_count;
 
-        // Place rewards
-        for i in 0..reward_count {
-            if i < valid_positions.len() {
-                let pos = valid_positions[i];
-                let reward = REWARDS[rng.random_range(0..REWARDS.len())];
+        // Track occupied positions and their adjacent cells
+        let mut occupied_and_adjacent = HashSet::new();
+
+        // Place rewards first
+        let mut reward_placed = 0;
+        for pos in &valid_positions {
+            if reward_placed >= reward_count {
+                break;
+            }
+
+            if !occupied_and_adjacent.contains(pos) {
+                // Place the reward
+                let reward = *REWARDS.choose(&mut rng).unwrap();
                 self.set(pos.x, pos.y, reward);
+                reward_placed += 1;
+
+                // Mark this position and adjacent positions as occupied
+                occupied_and_adjacent.insert(*pos);
+
+                // Mark adjacent cells as unavailable
+                let adjacent = [
+                    Pos {
+                        x: pos.x + 1,
+                        y: pos.y,
+                    },
+                    Pos {
+                        x: pos.x.saturating_sub(1),
+                        y: pos.y,
+                    },
+                    Pos {
+                        x: pos.x,
+                        y: pos.y + 1,
+                    },
+                    Pos {
+                        x: pos.x,
+                        y: pos.y.saturating_sub(1),
+                    },
+                ];
+
+                for adj in adjacent.iter() {
+                    if adj.x < self.width && adj.y < self.height {
+                        occupied_and_adjacent.insert(*adj);
+                    }
+                }
             }
         }
 
         // Place dangers
-        for i in reward_count..reward_count + danger_count {
-            if i < valid_positions.len() {
-                let pos = valid_positions[i];
-                let danger = DANGERS[rng.random_range(0..DANGERS.len())];
+        let mut danger_placed = 0;
+        for pos in &valid_positions {
+            if danger_placed >= danger_count {
+                break;
+            }
+
+            if !occupied_and_adjacent.contains(pos) {
+                // Place the danger
+                let danger = *DANGERS.choose(&mut rng).unwrap();
                 self.set(pos.x, pos.y, danger);
+                danger_placed += 1;
+
+                // Mark this position and adjacent positions as occupied
+                occupied_and_adjacent.insert(*pos);
+
+                // Mark adjacent cells as unavailable
+                let adjacent = [
+                    Pos {
+                        x: pos.x + 1,
+                        y: pos.y,
+                    },
+                    Pos {
+                        x: pos.x.saturating_sub(1),
+                        y: pos.y,
+                    },
+                    Pos {
+                        x: pos.x,
+                        y: pos.y + 1,
+                    },
+                    Pos {
+                        x: pos.x,
+                        y: pos.y.saturating_sub(1),
+                    },
+                ];
+
+                for adj in adjacent.iter() {
+                    if adj.x < self.width && adj.y < self.height {
+                        occupied_and_adjacent.insert(*adj);
+                    }
+                }
             }
         }
     }
 
-    pub fn solve(&mut self) -> Option<Vec<Pos>> {
+    pub fn shortest_path(&mut self) -> Option<Vec<Pos>> {
         let center_x = self.width / 2;
         let center_y = self.height / 2;
         let start = Pos {
@@ -450,8 +656,7 @@ impl Maze {
             }
         }
         while let Some((pos, path)) = queue.pop() {
-            // Check if we've reached an exit
-            if pos.x == 0 || pos.x == self.width - 1 || pos.y == 0 || pos.y == self.height - 1 {
+            if self.get(pos.x, pos.y) == CellType::Exit {
                 return Some(path);
             }
 
@@ -495,7 +700,7 @@ impl Maze {
         &self,
         filename: &str,
         scale: f32,
-        with_solution: bool,
+        with_solution: SolutionType,
     ) -> std::io::Result<()> {
         let mut maze = self.clone();
         let mut file = File::create(filename)?;
@@ -514,19 +719,23 @@ impl Maze {
             file,
             "<rect width=\"100%\" height=\"100%\" fill=\"#eee\" />"
         )?;
-        writeln!(file, "  <g transform=\"scale({})\" fill=\"#eee\" >", scale)?;
+        writeln!(file, "  <g transform=\"scale({})\" >", scale)?;
 
-        if with_solution {
-            if let Some(solution) = maze.solve() {
-                writeln!(
-                    file,
-                    "    <polyline fill=\"none\" stroke=\"rgb(28, 163, 163)\" stroke-width=\"0.35\" points=\"",
-                )?;
-                for pos in solution {
-                    write!(file, "{},{} ", (pos.x as f32 + 0.5), (pos.y as f32 + 0.5))?;
+        match with_solution {
+            SolutionType::ShortestPath => {
+                if let Some(solution) = maze.shortest_path() {
+                    writeln!(
+                        file,
+                        "    <polyline fill=\"none\" stroke=\"rgb(28, 163, 163)\" stroke-width=\"0.35\" points=\"",
+                    )?;
+                    for pos in solution {
+                        write!(file, "{},{} ", (pos.x as f32 + 0.5), (pos.y as f32 + 0.5))?;
+                    }
+                    writeln!(file, "\" />")?;
                 }
-                writeln!(file, "\" />")?;
             }
+            SolutionType::MinimumSpanningTree => {}
+            SolutionType::None => {}
         }
 
         // Draw the maze
@@ -549,7 +758,7 @@ impl Maze {
                             "    <circle cx=\"{}\" cy=\"{}\" r=\"0.4\" fill=\"#e43\" title=\"{}\" />",
                             x as f32 + 0.5,
                             y as f32 + 0.5,
-                            maze.get(x, y).to_string()
+                            maze.get(x, y)
                         )?;
                     }
                     CellType::Marshmallows
@@ -562,7 +771,7 @@ impl Maze {
                             "    <circle cx=\"{}\" cy=\"{}\" r=\"0.4\" fill=\"#2d1\" title=\"{}\" />",
                             x as f32 + 0.5,
                             y as f32 + 0.5,
-                            maze.get(x, y).to_string()
+                            maze.get(x, y)
                         )?;
                     }
                     CellType::Wall => {
@@ -601,21 +810,14 @@ impl Maze {
         let mut exit_pos: Option<Pos> = None;
         for x in [0, self.width - 1].iter() {
             for y in 0..self.height {
-                if self.get(*x, y) == CellType::Path {
+                if self.get(*x, y) == CellType::Exit {
                     exit_pos = Some(Pos { x: *x, y });
                     break;
                 }
             }
         }
         if exit_pos.is_none() {
-            for y in [0, self.height - 1].iter() {
-                for x in 0..self.width {
-                    if self.get(x, *y) == CellType::Path {
-                        exit_pos = Some(Pos { x, y: *y });
-                        break;
-                    }
-                }
-            }
+            return (nodes, edges);
         }
 
         if let Some(pos) = exit_pos {
@@ -628,10 +830,7 @@ impl Maze {
             for x in 1..self.width - 1 {
                 let cell_type = self.get(x, y);
                 // Check if the cell is a path, reward or danger (traversable)
-                if cell_type == CellType::Path
-                    || REWARDS.contains(&cell_type)
-                    || DANGERS.contains(&cell_type)
-                {
+                if TRAVERSABLE.contains(&cell_type) {
                     let current_pos = Pos { x, y };
                     let neighbors = [
                         Pos { x: x + 1, y },
@@ -640,12 +839,7 @@ impl Maze {
                         Pos { x, y: y - 1 },
                     ]
                     .iter()
-                    .filter(|pos| {
-                        let pos_type = self.get(pos.x, pos.y);
-                        pos_type == CellType::Path
-                            || REWARDS.contains(&pos_type)
-                            || DANGERS.contains(&pos_type)
-                    })
+                    .filter(|pos| TRAVERSABLE.contains(&self.get(pos.x, pos.y)))
                     .count();
 
                     // Create a node if this is an intersection (>2 neighbors) or dead end (1 neighbor)
